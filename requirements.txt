@@ -1,0 +1,4 @@
+numpy
+psychopy
+wxpython==3 # https://anaconda.org/bjornfjohansson/wxpython
+pylsl

@@ -22,13 +22,15 @@ TBD:
 
 """
 
-import numpy as np
 import csv
 import os
-from psychopy import visual, core, data, tools, event
-from psychopy import gui
 from datetime import datetime
+
+import numpy as np
+from psychopy import visual, core, data, tools, event, gui
 from scipy.stats import norm
+from pylsl import StreamInfo, StreamOutlet
+
 
 def get_parameters(skip_gui=False):
     # Setup my global parameters
@@ -284,11 +286,12 @@ def decode_response(params,response):
     return respcode
     
 
-def show_study(params,study_list,study_cond,set_bins):
+def show_study(params, study_list, study_cond, set_bins, lsl_outlet=None):
     """ Shows the study phase """
     global log
     global win
-    
+
+    markernames = {'SR': 0, 'SL': 1}
 
     instructions1=visual.TextStim(win,text="Indoor or Outdoor?",pos=(0,0.9),
         color=(-1,-1,-1),wrapWidth=1.75,alignHoriz='center',alignVert='center')
@@ -317,11 +320,15 @@ def show_study(params,study_list,study_cond,set_bins):
             t1=local_timer.getTime()
         else:
             t1 = trial * (duration + isi)  # Time when this trial should have started
-        log.write('{0},{1},{2},{3:.3f},'.format(trial+1,study_list[trial],study_cond[trial],local_timer.getTime()))
+        log.write('{0},{1},{2},{3:.3f},'.format(
+            trial + 1, study_list[trial], study_cond[trial], 
+            local_timer.getTime()))
         log.flush()
         image = visual.ImageStim(win, image=study_list[trial])
         image.draw()
         instructions1.draw()
+        lsl_outlet.push_sample([markernames[study_cond[trial]]], timestamp=0.0)
+        print('Just sent {}'.format(markernames[study_cond[trial]]))
         win.flip()
         RT=0
         key = event.waitKeys(duration,keyList=valid_keys)  # Wait our normal duration
@@ -533,55 +540,62 @@ def show_test(params,test_list,test_cond,set_bins):
     
     
 # ------------------------------------------------------------------------    
-# Main routine
-params = get_parameters()
-print(params)
-# Set our random seed
-if params['Randomization'] == -1:
-    seed = params['ID']
-elif params['Randomization']==0:
-    seed = None
-else:
-    seed = params['Randomization']
-np.random.seed(seed)
+if __name__ == '__main__':
 
-# Get my log file going in append mode
-log = open('MST_{0}.txt'.format(params['ID']),"a+")
-log.write('MST Task\nStarted at {0}\n'.format(str(datetime.now())))
-log.write('ID: {0}\n'.format(params['ID']))
-log.write('Duration: {0}\n'.format(params['Duration']))
-log.write('ISI: {0}\n'.format(params['ISI']))
-log.write('Phase: {0}\n'.format(params['Phase']))
-log.write('Set: {0}\n'.format(params['Set']))
-log.write('Respkeys: {0} {1} {2}\n'.format(params['Resp1Keys'],params['Resp1Keys'],params['Resp1Keys']))
-log.write('Self-paced: {0}\n'.format(params['SelfPaced']))
-log.write('Two-choice: {0}\n'.format(params['TwoChoice']))
-log.write('NStimPerSet: {0}\n'.format(params['NStimPerSet']))
-log.write('sublist: {0}\n'.format(params['sublist']))
-log.write('Rnd-mode: {0} with seed {1}\n'.format(params['Randomization'],seed))
-log.write('Raw params: {0}'.format(params))
-log.write('\n\n')
-log.flush()
+    # Main routine
+    params = get_parameters()
+    print(params)
 
-# Load up the bin file and check the stimulus directory.  Note, the set_bins
-# is such that 001a/b.jpg will be first, 002a/b.jpg will be second, etc.       
-set_bins = np.array(check_files(params['Set']))
+    # Set our random seed
+    if params['Randomization'] == -1:
+        seed = params['ID']
+    elif params['Randomization'] == 0:
+        seed = None
+    else:
+        seed = params['Randomization']
+    np.random.seed(seed)
 
+    # Get my log file going in append mode
+    log = open('MST_{0}.txt'.format(params['ID']),"a+")
+    log.write('MST Task\nStarted at {0}\n'.format(str(datetime.now())))
+    log.write('ID: {0}\n'.format(params['ID']))
+    log.write('Duration: {0}\n'.format(params['Duration']))
+    log.write('ISI: {0}\n'.format(params['ISI']))
+    log.write('Phase: {0}\n'.format(params['Phase']))
+    log.write('Set: {0}\n'.format(params['Set']))
+    log.write('Respkeys: {0} {1} {2}\n'.format(params['Resp1Keys'],params['Resp1Keys'],params['Resp1Keys']))
+    log.write('Self-paced: {0}\n'.format(params['SelfPaced']))
+    log.write('Two-choice: {0}\n'.format(params['TwoChoice']))
+    log.write('NStimPerSet: {0}\n'.format(params['NStimPerSet']))
+    log.write('sublist: {0}\n'.format(params['sublist']))
+    log.write('Rnd-mode: {0} with seed {1}\n'.format(params['Randomization'],seed))
+    log.write('Raw params: {0}'.format(params))
+    log.write('\n\n')
+    log.flush()
 
+    # Load up the bin file and check the stimulus directory.  Note, the set_bins
+    # is such that 001a/b.jpg will be first, 002a/b.jpg will be second, etc.       
+    set_bins = np.array(check_files(params['Set']))
 
-# Figure out which stimuli will be shown in which conditions
-(repeatstim, lurestim, foilstim) = setup_list_permuted(set_bins,params['NStimPerSet'],params['sublist'])
+    # Figure out which stimuli will be shown in which conditions
+    (repeatstim, lurestim, foilstim) = setup_list_permuted(
+        set_bins,params['NStimPerSet'],params['sublist'])
 
-# Create the actual order of filenames to be shown
-(study_list,study_cond,test_list,test_cond) = create_order(params['Set'],repeatstim, lurestim, foilstim)
+    # Create the actual order of filenames to be shown
+    (study_list,study_cond,test_list,test_cond) = create_order(
+        params['Set'],repeatstim, lurestim, foilstim)
 
-win = visual.Window([800, 800], monitor='testMonitor',color='white')
+    # Create markers stream outlet
+    info = StreamInfo('Markers', 'Markers', 1, 0, 'int32', 'myuidw43536')
+    outlet = StreamOutlet(info)
 
-if params['Phase'] == 'Phase 1':
-    show_study(params,study_list,study_cond,set_bins)
-else:
-    show_test(params,test_list,test_cond,set_bins)
-    
-win.close()  
-log.close()
-core.quit()
+    win = visual.Window([800, 800], monitor='testMonitor', color='white')
+
+    if params['Phase'] == 'Phase 1':
+        show_study(params, study_list, study_cond, set_bins, lsl_outlet=outlet)
+    else:
+        show_test(params, test_list, test_cond, set_bins, lsl_outlet=outlet)
+        
+    win.close()  
+    log.close()
+    core.quit()
